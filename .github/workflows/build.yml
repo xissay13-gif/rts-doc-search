@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build apps
 
 on:
   push:
@@ -39,3 +39,39 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/address-search.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Сборка внутри Debian 10 (buster, glibc 2.28), чтобы бинарник
+      # запускался и на Astra Linux 1.7 (glibc 2.28), и на 1.8 (glibc 2.31).
+      # Checkout идёт на обычном раннере, а сборка — в контейнере через
+      # docker run (внутри нужен только bash/python, без Node.js).
+      - name: Build in Debian 10 container
+        run: |
+          docker run --rm -v "$PWD":/src -w /src debian:10 bash -c '
+            set -eux
+            echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
+            echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list
+            apt-get -o Acquire::Check-Valid-Until=false update
+            apt-get install -y --no-install-recommends \
+              python3 python3-tk python3-pip binutils zlib1g ca-certificates
+            pip3 install --upgrade "pip<23.2"
+            pip3 install "pyinstaller==5.13.2"
+            pyinstaller --noconfirm --onefile --name address-search address_search.py
+          '
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: address-search-linux
+          path: dist/address-search
+
+      - name: Attach binary to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/address-search

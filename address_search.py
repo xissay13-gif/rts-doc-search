@@ -72,15 +72,30 @@ def street_matches(folder_name, query):
 # Префиксы у номеров домов / квартир.
 NUM_PREFIXES = ("дом", "д.", "д ", "квартира", "кв.", "кв ", "кв", "№", "no", "n")
 
+# Латинские буквы, похожие на кириллические (чтобы "13A" совпадало с "13А").
+LOOKALIKE = str.maketrans({
+    "a": "а", "b": "в", "c": "с", "e": "е", "h": "н", "k": "к",
+    "m": "м", "o": "о", "p": "р", "t": "т", "x": "х", "y": "у",
+})
+
+# Разделители внутри номера, которые при сравнении игнорируем.
+NUM_SEPARATORS = ("/", "\\", "-", "_", " ", ".", "№")
+
 
 def num_core(name):
-    n = normalize(name).replace(" ", "")
+    """Привести номер дома/квартиры к виду, устойчивому к мелким различиям.
+
+    "13/Г", "13-Г", "13 Г", "д. 13Г" -> "13г";  латинские двойники -> кириллица.
+    """
+    n = normalize(name).translate(LOOKALIKE).replace(" ", "")
     for p in NUM_PREFIXES:
         p2 = p.replace(" ", "")
         if n.startswith(p2):
             n = n[len(p2):]
             break
-    return n.strip(" .,№")
+    for sep in NUM_SEPARATORS:
+        n = n.replace(sep, "")
+    return n.strip(" .,")
 
 
 def num_matches(folder_name, query):
@@ -153,17 +168,68 @@ def search(roots, street, house, apartment):
     return found
 
 
-def open_path(path):
-    """Открыть файл или папку средствами ОС."""
-    try:
-        if sys.platform.startswith("win"):
-            os.startfile(path)  # noqa
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
+def _external_env():
+    """Окружение для запуска внешних программ.
+
+    Если приложение собрано PyInstaller (--onefile), оно подменяет
+    LD_LIBRARY_PATH своими библиотеками. Системный «открывальщик» и
+    файловый менеджер не должны их наследовать — иначе они падают и
+    файлы/папки не открываются. PyInstaller сохраняет оригинал в *_ORIG.
+    """
+    env = dict(os.environ)
+    for var in ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH"):
+        orig = env.get(var + "_ORIG")
+        if orig is not None:
+            env[var] = orig
         else:
-            subprocess.Popen(["xdg-open", path])
-    except Exception as e:  # noqa
-        messagebox.showerror("Ошибка", "Не удалось открыть:\n%s\n\n%s" % (path, e))
+            env.pop(var, None)
+    return env
+
+
+def open_path(path):
+    """Открыть файл или папку средствами ОС (Windows / macOS / Linux/Astra)."""
+    if sys.platform.startswith("win"):
+        try:
+            os.startfile(path)  # noqa
+        except Exception as e:  # noqa
+            messagebox.showerror("Ошибка", "Не удалось открыть:\n%s\n\n%s" % (path, e))
+        return
+
+    if sys.platform == "darwin":
+        openers = [["open", path]]
+    else:
+        # Несколько вариантов: подойдёт первый установленный в системе.
+        # fly-fm — файловый менеджер окружения Fly в Astra Linux.
+        openers = [
+            ["xdg-open", path],
+            ["gio", "open", path],
+            ["exo-open", path],
+            ["kde-open5", path],
+            ["kde-open", path],
+            ["fly-fm", path],
+            ["nautilus", path],
+            ["pcmanfm", path],
+            ["thunar", path],
+            ["dolphin", path],
+        ]
+
+    env = _external_env()
+    last_err = None
+    for cmd in openers:
+        try:
+            subprocess.Popen(cmd, env=env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except FileNotFoundError as e:
+            last_err = e  # этой программы нет — пробуем следующую
+        except Exception as e:  # noqa
+            last_err = e
+    messagebox.showerror(
+        "Ошибка",
+        "Не удалось открыть:\n%s\n\n"
+        "Не найдена программа для открытия. Установите xdg-utils:\n"
+        "sudo apt install xdg-utils\n\n%s" % (path, last_err),
+    )
 
 
 def load_config():

@@ -232,6 +232,39 @@ def open_path(path):
     )
 
 
+def print_path(path):
+    """Отправить один файл на принтер по умолчанию.
+
+    Возвращает (True, "") при успехе или (False, "причина") при ошибке.
+    Windows — через зарегистрированное приложение (глагол "print").
+    Linux/Astra и macOS — через CUPS (команда lp).
+    """
+    if sys.platform.startswith("win"):
+        try:
+            os.startfile(path, "print")  # noqa
+            return True, ""
+        except Exception as e:  # noqa
+            return False, str(e)
+
+    # Linux / macOS: печать через CUPS.
+    env = _external_env()
+    for cmd in (["lp", path], ["lpr", path]):
+        try:
+            res = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            if res.returncode == 0:
+                return True, ""
+            err = (res.stderr or b"").decode("utf-8", "replace").strip()
+            # Команда есть, но печать не удалась (нет принтера и т.п.).
+            return False, err or ("код возврата %d" % res.returncode)
+        except FileNotFoundError:
+            continue  # нет этой команды — пробуем следующую
+        except Exception as e:  # noqa
+            return False, str(e)
+    return False, ("не найдена система печати (lp/lpr).\n"
+                   "Установите клиент CUPS:  sudo apt install cups-client")
+
+
 def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -308,7 +341,7 @@ class App(tk.Tk):
         res.pack(fill="both", expand=True, **pad)
 
         cols = ("doc", "path", "root")
-        self.tree = ttk.Treeview(res, columns=cols, show="headings")
+        self.tree = ttk.Treeview(res, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("doc", text="Документ")
         self.tree.heading("path", text="Адрес / расположение")
         self.tree.heading("root", text="Папка-источник")
@@ -327,6 +360,7 @@ class App(tk.Tk):
         bottom.pack(fill="x", **pad)
         ttk.Button(bottom, text="Открыть файл", command=self._open_selected_file).pack(side="left")
         ttk.Button(bottom, text="Открыть папку с файлом", command=self._open_selected_folder).pack(side="left", padx=6)
+        ttk.Button(bottom, text="Печать", command=self._print_selected).pack(side="left")
         self.status = ttk.Label(bottom, text="Готово")
         self.status.pack(side="right")
 
@@ -429,6 +463,47 @@ class App(tk.Tk):
         p = self._selected_path()
         if p:
             open_path(os.path.dirname(p))
+
+    # ---------- печать ----------
+    def _print_selected(self):
+        sel = self.tree.selection()
+        # Если ничего не выделено — предлагаем напечатать все найденные.
+        if sel:
+            paths = [self.result_paths[i] for i in sel if i in self.result_paths]
+        else:
+            paths = list(self.result_paths.values())
+            if not paths:
+                messagebox.showinfo("Печать", "Сначала найдите документы.")
+                return
+            if not messagebox.askyesno(
+                "Печать",
+                "Ничего не выделено. Напечатать ВСЕ найденные документы (%d шт.)?"
+                % len(paths)):
+                return
+
+        if not paths:
+            return
+        if len(paths) > 1 and not messagebox.askyesno(
+                "Печать", "Отправить на печать %d документ(ов)?" % len(paths)):
+            return
+
+        ok, failed = 0, []
+        for p in paths:
+            success, err = print_path(p)
+            if success:
+                ok += 1
+            else:
+                failed.append((p, err))
+
+        self.status.config(text="Отправлено на печать: %d" % ok)
+        if failed:
+            details = "\n".join("• %s\n   %s" % (os.path.basename(p), e)
+                                for p, e in failed[:10])
+            messagebox.showwarning(
+                "Печать",
+                "Напечатано: %d. Не удалось: %d.\n\n%s" % (ok, len(failed), details))
+        else:
+            messagebox.showinfo("Печать", "Отправлено на печать: %d документ(ов)." % ok)
 
 
 def main():

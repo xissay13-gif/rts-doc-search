@@ -23,9 +23,21 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
+      # Портативный SumatraPDF для надёжной тихой печати PDF/сканов в Windows.
+      - name: Download SumatraPDF
+        shell: pwsh
+        run: |
+          $url = "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64.zip"
+          Invoke-WebRequest -Uri $url -OutFile sumatra.zip
+          Expand-Archive sumatra.zip -DestinationPath sumatra -Force
+          $exe = Get-ChildItem sumatra -Filter *.exe -Recurse | Select-Object -First 1
+          Copy-Item $exe.FullName SumatraPDF.exe
+          if (-not (Test-Path SumatraPDF.exe)) { throw "SumatraPDF.exe not found" }
+
       - name: Build EXE
         run: >
           pyinstaller --noconfirm --onefile --windowed
+          --add-binary "SumatraPDF.exe;."
           --name address-search address_search.py
 
       - name: Upload artifact

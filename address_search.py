@@ -29,6 +29,14 @@ from tkinter import ttk, filedialog, messagebox
 APP_TITLE = "Поиск документов по адресу"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".address_search_config.json")
 
+
+def _resource_dir():
+    """Папка с ресурсами рядом с программой (учитывает сборку PyInstaller)."""
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # Папкой-буквой считаем каталог, чьё имя — одна буква (А, Б, ... возможно с точкой).
 def is_letter_folder(name):
     core = name.strip().strip(".").strip()
@@ -232,6 +240,11 @@ def open_path(path):
     )
 
 
+# Типы файлов, которые умеет печатать встроенный SumatraPDF.
+SUMATRA_EXT = {".pdf", ".xps", ".djvu", ".cbz", ".cbr",
+               ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".bmp", ".webp"}
+
+
 def print_path(path):
     """Отправить один файл на принтер по умолчанию.
 
@@ -240,11 +253,27 @@ def print_path(path):
     Linux/Astra и macOS — через CUPS (команда lp).
     """
     if sys.platform.startswith("win"):
+        ext = os.path.splitext(path)[1].lower()
+        # Для PDF и изображений печатаем через встроенный SumatraPDF —
+        # не зависит от того, какой просмотрщик стоит в системе.
+        sumatra = os.path.join(_resource_dir(), "SumatraPDF.exe")
+        if os.path.exists(sumatra) and ext in SUMATRA_EXT:
+            try:
+                res = subprocess.run(
+                    [sumatra, "-print-to-default", "-silent", path])
+                if res.returncode == 0:
+                    return True, ""
+            except Exception:  # noqa
+                pass  # не вышло — пробуем системную печать ниже
+        # Прочие типы (Word, txt и т.п.) — системная печать.
         try:
             os.startfile(path, "print")  # noqa
             return True, ""
         except Exception as e:  # noqa
-            return False, str(e)
+            return False, ("нет приложения, умеющего печатать «%s».\n"
+                           "Откройте файл и нажмите Ctrl+P, либо установите "
+                           "программу-просмотрщик с поддержкой печати.\n%s"
+                           % (ext or "файл", e))
 
     # Linux / macOS: печать через CUPS.
     env = _external_env()

@@ -319,6 +319,7 @@ class App(tk.Tk):
 
         self.cfg = load_config()
         self.result_paths = {}      # item_id -> полный путь
+        self.checked = set()        # item_id отмеченных галочкой строк
         self.queue = queue.Queue()  # сообщения из рабочего потока
 
         self._build_ui()
@@ -369,29 +370,79 @@ class App(tk.Tk):
         res = ttk.LabelFrame(self, text="Найденные документы")
         res.pack(fill="both", expand=True, **pad)
 
-        cols = ("doc", "path", "root")
+        cols = ("check", "doc", "path", "root")
         self.tree = ttk.Treeview(res, columns=cols, show="headings", selectmode="extended")
+        # Клик по заголовку колонки-галочки отмечает/снимает все.
+        self.tree.heading("check", text="☐", command=self._toggle_all)
         self.tree.heading("doc", text="Документ")
         self.tree.heading("path", text="Адрес / расположение")
         self.tree.heading("root", text="Папка-источник")
+        self.tree.column("check", width=38, anchor="center", stretch=False)
         self.tree.column("doc", width=240)
-        self.tree.column("path", width=420)
+        self.tree.column("path", width=400)
         self.tree.column("root", width=160)
 
         vsb = ttk.Scrollbar(res, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         vsb.pack(side="left", fill="y", pady=6)
-        self.tree.bind("<Double-1>", lambda _e: self._open_selected_file())
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Double-1>", self._on_tree_double)
 
         # Нижняя панель
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", **pad)
         ttk.Button(bottom, text="Открыть файл", command=self._open_selected_file).pack(side="left")
         ttk.Button(bottom, text="Открыть папку с файлом", command=self._open_selected_folder).pack(side="left", padx=6)
-        ttk.Button(bottom, text="Печать", command=self._print_selected).pack(side="left")
+        ttk.Button(bottom, text="Отметить все", command=lambda: self._check_all(True)).pack(side="left")
+        ttk.Button(bottom, text="Снять все", command=lambda: self._check_all(False)).pack(side="left", padx=6)
+        ttk.Button(bottom, text="Печать отмеченных", command=self._print_selected).pack(side="left")
         self.status = ttk.Label(bottom, text="Готово")
         self.status.pack(side="right")
+
+    # ---------- галочки ----------
+    def _on_tree_click(self, event):
+        """Клик по колонке-галочке переключает отметку строки."""
+        if self.tree.identify("region", event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#1":
+            return
+        row = self.tree.identify_row(event.y)
+        if row:
+            self._set_checked(row, row not in self.checked)
+            self._update_header_box()
+            return "break"  # не менять обычное выделение при клике по галочке
+
+    def _on_tree_double(self, event):
+        """Двойной клик открывает файл (кроме колонки-галочки)."""
+        if self.tree.identify_column(event.x) == "#1":
+            return
+        self._open_selected_file()
+
+    def _set_checked(self, row, value):
+        if value:
+            self.checked.add(row)
+            self.tree.set(row, "check", "☑")
+        else:
+            self.checked.discard(row)
+            self.tree.set(row, "check", "☐")
+
+    def _check_all(self, value):
+        for it in self.tree.get_children():
+            self._set_checked(it, value)
+        self._update_header_box()
+
+    def _toggle_all(self):
+        items = self.tree.get_children()
+        all_checked = items and all(it in self.checked for it in items)
+        self._check_all(not all_checked)
+
+    def _update_header_box(self):
+        items = self.tree.get_children()
+        if items and all(it in self.checked for it in items):
+            self.tree.heading("check", text="☑")
+        else:
+            self.tree.heading("check", text="☐")
 
     # ---------- папки ----------
     def _refresh_folders_list(self):
@@ -432,6 +483,7 @@ class App(tk.Tk):
 
         self.tree.delete(*self.tree.get_children())
         self.result_paths.clear()
+        self.checked.clear()
         self.btn_search.config(state="disabled")
         self.status.config(text="Идёт поиск…")
 
@@ -463,13 +515,16 @@ class App(tk.Tk):
 
     def _show_results(self, results):
         self.btn_search.config(state="normal")
+        self.checked.clear()
         for full_path, root in results:
             rel = os.path.relpath(os.path.dirname(full_path), root)
             item = self.tree.insert(
                 "", tk.END,
-                values=(os.path.basename(full_path), rel, os.path.basename(root.rstrip("/\\")) or root),
+                values=("☐", os.path.basename(full_path), rel,
+                        os.path.basename(root.rstrip("/\\")) or root),
             )
             self.result_paths[item] = full_path
+        self._update_header_box()
         self.status.config(text="Найдено документов: %d" % len(results))
         if not results:
             messagebox.showinfo("Ничего не найдено",
@@ -495,10 +550,10 @@ class App(tk.Tk):
 
     # ---------- печать ----------
     def _print_selected(self):
-        sel = self.tree.selection()
-        # Если ничего не выделено — предлагаем напечатать все найденные.
-        if sel:
-            paths = [self.result_paths[i] for i in sel if i in self.result_paths]
+        # Печатаем отмеченные галочкой документы (в порядке списка).
+        if self.checked:
+            paths = [self.result_paths[i] for i in self.tree.get_children()
+                     if i in self.checked and i in self.result_paths]
         else:
             paths = list(self.result_paths.values())
             if not paths:
@@ -506,7 +561,7 @@ class App(tk.Tk):
                 return
             if not messagebox.askyesno(
                 "Печать",
-                "Ничего не выделено. Напечатать ВСЕ найденные документы (%d шт.)?"
+                "Галочки не проставлены. Напечатать ВСЕ найденные документы (%d шт.)?"
                 % len(paths)):
                 return
 

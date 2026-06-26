@@ -23,6 +23,7 @@ import json
 import queue
 import threading
 import subprocess
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -294,6 +295,15 @@ def print_path(path):
                    "Установите клиент CUPS:  sudo apt install cups-client")
 
 
+def file_mtime(path):
+    """Дата изменения файла: (epoch, "ДД.ММ.ГГГГ ЧЧ:ММ"). При ошибке (0, "")."""
+    try:
+        ts = os.path.getmtime(path)
+        return ts, datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+    except Exception:  # noqa
+        return 0.0, ""
+
+
 def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -320,6 +330,8 @@ class App(tk.Tk):
         self.cfg = load_config()
         self.result_paths = {}      # item_id -> полный путь
         self.checked = set()        # item_id отмеченных галочкой строк
+        self.mtimes = {}            # item_id -> дата изменения (epoch) для сортировки
+        self._sort_reverse = {}     # колонка -> направление сортировки
         self.queue = queue.Queue()  # сообщения из рабочего потока
 
         self._build_ui()
@@ -370,17 +382,23 @@ class App(tk.Tk):
         res = ttk.LabelFrame(self, text="Найденные документы")
         res.pack(fill="both", expand=True, **pad)
 
-        cols = ("check", "doc", "path", "root")
+        cols = ("check", "doc", "modified", "path", "root")
         self.tree = ttk.Treeview(res, columns=cols, show="headings", selectmode="extended")
         # Клик по заголовку колонки-галочки отмечает/снимает все.
         self.tree.heading("check", text="☐", command=self._toggle_all)
-        self.tree.heading("doc", text="Документ")
-        self.tree.heading("path", text="Адрес / расположение")
-        self.tree.heading("root", text="Папка-источник")
+        # Клик по остальным заголовкам сортирует по этой колонке.
+        self.tree.heading("doc", text="Документ", command=lambda: self._sort_by("doc"))
+        self.tree.heading("modified", text="Дата изменения",
+                          command=lambda: self._sort_by("modified"))
+        self.tree.heading("path", text="Адрес / расположение",
+                          command=lambda: self._sort_by("path"))
+        self.tree.heading("root", text="Папка-источник",
+                          command=lambda: self._sort_by("root"))
         self.tree.column("check", width=38, anchor="center", stretch=False)
-        self.tree.column("doc", width=240)
-        self.tree.column("path", width=400)
-        self.tree.column("root", width=160)
+        self.tree.column("doc", width=220)
+        self.tree.column("modified", width=130, anchor="center", stretch=False)
+        self.tree.column("path", width=320)
+        self.tree.column("root", width=150)
 
         vsb = ttk.Scrollbar(res, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -443,6 +461,19 @@ class App(tk.Tk):
             self.tree.heading("check", text="☑")
         else:
             self.tree.heading("check", text="☐")
+
+    # ---------- сортировка ----------
+    def _sort_by(self, col):
+        items = list(self.tree.get_children())
+        reverse = self._sort_reverse.get(col, False)
+        if col == "modified":
+            key = lambda it: self.mtimes.get(it, 0.0)
+        else:
+            key = lambda it: normalize(self.tree.set(it, col))
+        items.sort(key=key, reverse=reverse)
+        for idx, it in enumerate(items):
+            self.tree.move(it, "", idx)
+        self._sort_reverse[col] = not reverse
 
     # ---------- папки ----------
     def _refresh_folders_list(self):
@@ -516,14 +547,17 @@ class App(tk.Tk):
     def _show_results(self, results):
         self.btn_search.config(state="normal")
         self.checked.clear()
+        self.mtimes.clear()
         for full_path, root in results:
             rel = os.path.relpath(os.path.dirname(full_path), root)
+            ts, ts_str = file_mtime(full_path)
             item = self.tree.insert(
                 "", tk.END,
-                values=("☐", os.path.basename(full_path), rel,
+                values=("☐", os.path.basename(full_path), ts_str, rel,
                         os.path.basename(root.rstrip("/\\")) or root),
             )
             self.result_paths[item] = full_path
+            self.mtimes[item] = ts
         self._update_header_box()
         self.status.config(text="Найдено документов: %d" % len(results))
         if not results:
